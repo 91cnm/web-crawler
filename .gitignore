@@ -1,0 +1,7 @@
+# 运行时产物（爬取结果、zip 压缩包、锁文件）
+sites/
+
+# 操作系统/编辑器临时文件
+Thumbs.db
+Desktop.ini
+.DS_Store

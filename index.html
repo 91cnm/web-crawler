@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全能网页爬虫工具（PHP版）</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    background: #f5f7fa; color: #1f2937; min-height: 100vh;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 20px 60px; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: #6b7280; font-size: 14px; margin-bottom: 28px; line-height: 1.7; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 20px;
+  }
+  form { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type=text] {
+    flex: 1; min-width: 260px; padding: 12px 14px;
+    border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; outline: none;
+  }
+  input[type=text]:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+  button {
+    padding: 12px 26px; background: #2563eb; color: #fff; border: 0;
+    border-radius: 8px; font-size: 15px; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93c5fd; cursor: not-allowed; }
+  .hint { color: #9ca3af; font-size: 13px; margin-top: 10px; }
+  #status { display: none; align-items: center; gap: 12px; color: #4b5563; font-size: 14px; }
+  .spinner {
+    width: 18px; height: 18px; border: 3px solid #dbeafe;
+    border-top-color: #2563eb; border-radius: 50%;
+    animation: spin .8s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h2 { font-size: 16px; margin-bottom: 12px; }
+  pre {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 14px; font-size: 13px; line-height: 1.7;
+    max-height: 380px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .dl-btn {
+    display: inline-block; margin-top: 8px; padding: 12px 26px;
+    background: #059669; color: #fff; border-radius: 8px;
+    text-decoration: none; font-size: 15px;
+  }
+  .dl-btn:hover { background: #047857; }
+  .ok { color: #059669; font-size: 14px; margin-bottom: 10px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>全能网页爬虫工具</h1>
+  <div class="sub">
+    输入网址后点击「开始爬取」：后端自动抓取整站文件（HTML / CSS / JS 深层检索），
+    爬完后将第一级域名文件夹（如 example.com）打包成 .zip 供下载，
+    同时展示「所有下载文件列表.txt」和「下载统计.txt」的内容。
+  </div>
+
+  <div class="card">
+    <form id="crawlForm">
+      <input type="text" id="urlInput" placeholder="请输入网址，例如 example.com 或 https://example.com" required>
+      <button type="submit" id="btn">开始爬取</button>
+    </form>
+    <div class="hint">无需手动加 http(s)，直接输入域名即可。网站越大耗时越长，请耐心等待。</div>
+  </div>
+
+  <div class="card" id="status">
+    <div class="spinner"></div>
+    <span id="statusText">正在爬取，请稍候…</span>
+  </div>
+
+  <div id="result" style="display:none">
+    <div class="card">
+      <h2>爬取完成</h2>
+      <div class="ok" id="summary"></div>
+      <a id="downloadLink" class="dl-btn" href="#">下载 zip 压缩包</a>
+    </div>
+    <div class="card">
+      <h2>下载统计</h2>
+      <pre id="stats"></pre>
+    </div>
+    <div class="card">
+      <h2>所有下载文件列表</h2>
+      <pre id="fileList"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+  const form = document.getElementById('crawlForm');
+  const btn = document.getElementById('btn');
+  const statusBox = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const resultBox = document.getElementById('result');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) return;
+
+    resultBox.style.display = 'none';
+    statusBox.style.display = 'flex';
+    statusText.textContent = '正在爬取 ' + url + ' …（请勿关闭或刷新页面）';
+    btn.disabled = true;
+
+    try {
+      const res = await fetch('crawl.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        body: 'url=' + encodeURIComponent(url)
+      });
+
+      let data;
+      try {
+        data = await res.json();
+      } catch (e2) {
+        const text = await res.text();
+        throw new Error('后端返回了非 JSON 内容（可能是 PHP 配置问题）：' + text.slice(0, 200));
+      }
+
+      statusBox.style.display = 'none';
+      btn.disabled = false;
+
+      if (!data.success) {
+        alert('爬取失败：' + (data.error || '未知错误'));
+        return;
+      }
+
+      document.getElementById('downloadLink').href = data.zipUrl;
+      document.getElementById('downloadLink').setAttribute('download', data.zipName);
+      document.getElementById('summary').textContent =
+        '共下载 ' + data.downloadCount + ' 个文件' +
+        (data.failCount ? '，失败 ' + data.failCount + ' 个（见 sites/下载失败记录.txt）' : '') +
+        '，已打包为 ' + data.zipName + '，域名文件夹已自动清理（仅保留压缩包）';
+      document.getElementById('stats').textContent = data.stats;
+      document.getElementById('fileList').textContent = data.fileList;
+      resultBox.style.display = 'block';
+      resultBox.scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+      statusBox.style.display = 'none';
+      btn.disabled = false;
+      alert('请求出错：' + err.message);
+    }
+  });
+</script>
+</body>
+</html>
