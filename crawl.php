@@ -22,9 +22,9 @@ ignore_user_abort(true);
 // ==================== 配置区 ====================
 define('BASE_DIR', __DIR__ . DIRECTORY_SEPARATOR . 'sites'); // 保存根目录（域名文件夹的同级位置）
 define('MAX_RETRIES', 3);          // 单个 URL 最大重试次数
-define('REQUEST_TIMEOUT', 20);     // 单次请求超时（秒）
-define('MAX_RUNTIME_SECONDS', 0);  // 最大运行时长（秒），0 = 不限
-define('MAX_FILES', 0);            // 最大下载文件数，0 = 不限
+define('REQUEST_TIMEOUT', 10);     // 单次请求超时（秒）
+define('MAX_RUNTIME_SECONDS', 50); // 最大运行时长（秒），避免触发虚拟主机网关504超时
+define('MAX_FILES', 200);          // 最大下载文件数，防止整站无限爬取
 define('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 // ================================================
 
@@ -118,6 +118,8 @@ function url_join(string $base, string $rel): string
 function normalize_url(string $url, string $base): ?string
 {
     $url = trim($url);
+    // 编码 URL 中的空格（如 "Dynamic button.css" -> "Dynamic%20button.css"），否则 curl 无法请求
+    $url = str_replace(' ', '%20', $url);
     if ($url === '' || strncmp($url, '#', 1) === 0) return null;
     if (preg_match('#^(mailto:|tel:|javascript:|data:)#i', $url)) return null;
     if (!preg_match('#^[a-z][a-z0-9+\-.]*://#i', $url)) {
@@ -149,6 +151,8 @@ function parse_url_structure(string $url): array
     $parts = parse_url($url);
     $host = $parts['host'] ?? '';
     $path = rtrim($parts['path'] ?? '', '/');
+    // 解码 URL 编码字符（%20 等），避免文件名变成 xxx_20button.css
+    $path = rawurldecode($path);
     $query = $parts['query'] ?? '';
     $fullName = basename($path);
     if ($fullName === '') $fullName = 'index';
@@ -287,7 +291,7 @@ function extract_links_from_css(string $content, string $baseUrl, string $domain
 function extract_links_from_js(string $content, string $baseUrl, string $domain): array
 {
     $links = [];
-    preg_match_all('/["\']((?:\.{1,2}\/|\/)[^"\'<>\\\\\s]+\.(?:js|css|mjs|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|json))(\?[^"\']*)?["\']/i', $content, $m);
+    preg_match_all('/["\']((?:\.{1,2}\/|\/)?[^"\'<>\\\\\s]+\.(?:js|css|mjs|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|wav|json))(\?[^"\']*)?["\']/i', $content, $m);
     foreach ($m[0] as $raw) {
         $links[] = substr($raw, 1, -1);
     }
@@ -562,7 +566,17 @@ function create_zip(string $folder, string $zipPath): bool
     return $zip->close();
 }
 
+
 // ==================== 请求处理 ====================
+
+// ---- 清理锁定文件（爬取异常中断时残留的 .lock） ----
+if (($_GET['action'] ?? '') === 'clear_lock' || ($_POST['action'] ?? '') === 'clear_lock') {
+    $cleared = 0;
+    foreach (glob(BASE_DIR . DIRECTORY_SEPARATOR . '*.lock') as $lockFile) {
+        if (@unlink($lockFile)) $cleared++;
+    }
+    json_out(['success' => true, 'cleared' => $cleared]);
+}
 
 $url = trim((string)($_POST['url'] ?? $_GET['url'] ?? ''));
 if ($url === '') {
@@ -595,6 +609,10 @@ if (file_exists($lockFile) && (time() - @filemtime($lockFile)) < 3600) {
 $response = null;
 try {
     $result = crawl_site($url);
+    // ---- 记录爬取日志（网址 + 用户IP）----
+    $visitorIp = trim(explode(',', (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? 'unknown'))[0]);
+    $logLine = '[' . date('Y-m-d H:i:s') . '] 网址: ' . $url . ' | IP: ' . $visitorIp . PHP_EOL;
+    @file_put_contents(BASE_DIR . DIRECTORY_SEPARATOR . '爬取记录.txt', $logLine, FILE_APPEND | LOCK_EX);
 
     // ---- 将第一级域名文件夹压缩成 .zip ----
     $zipName = $siteKey . '.zip';
