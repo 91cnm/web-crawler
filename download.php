@@ -5,7 +5,7 @@
 
 $file = basename((string)($_GET['file'] ?? ''));
 // 只允许 .zip 且无路径穿越
-if (!preg_match('/^[\w\-.]+\.zip$/i', $file)) {
+if (!preg_match('/^[\w\-.]+\.zip$/iu', $file)) { // 加 u 修饰符，\w 才认中文文件名（中文域名生成的 zip）
     http_response_code(400);
     exit('文件名不合法');
 }

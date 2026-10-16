@@ -114,6 +114,63 @@ function url_join(string $base, string $rel): string
     return build_url($bp, $path, $query);
 }
 
+/**
+ * 将 URL 中的非 ASCII 字符（中文等）编码为百分号形式，
+ * 并把 IDN 中文域名转成 punycode（需 intl 扩展），供 curl 请求使用。
+ */
+function encode_non_ascii_url(string $url): string
+{
+    $parts = parse_url($url);
+    if (!$parts) return $url;
+
+    // 1) 中文域名 -> punycode
+    if (isset($parts['host']) && preg_match('/[^\x00-\x7f]/', $parts['host'])) {
+        if (function_exists('idn_to_ascii')) {
+            $variant = defined('INTL_IDNA_VARIANT_UTS46') ? INTL_IDNA_VARIANT_UTS46 : INTL_IDNA_VARIANT_2003;
+            $ascii = idn_to_ascii($parts['host'], IDNA_DEFAULT, $variant);
+            if ($ascii !== false) $parts['host'] = $ascii;
+        }
+    }
+
+    // 2) path：逐段编码非 ASCII（保留 / 与已存在的 %XX）
+    $path = $parts['path'] ?? '';
+    $segs = explode('/', $path);
+    foreach ($segs as $i => $seg) {
+        if ($seg === '') continue;
+        $segs[$i] = preg_replace_callback('/[^\x00-\x7f]/u', function ($m) {
+            return rawurlencode($m[0]);
+        }, $seg);
+    }
+    $parts['path'] = implode('/', $segs);
+
+    // 3) query：对每个参数名/值编码非 ASCII
+    if (!empty($parts['query'])) {
+        $pairs = [];
+        foreach (explode('&', $parts['query']) as $kv) {
+            $kv = explode('=', $kv, 2);
+            $k = preg_replace_callback('/[^\x00-\x7f]/u', function ($m) {
+                return rawurlencode($m[0]);
+            }, $kv[0]);
+            if (isset($kv[1])) {
+                $v = preg_replace_callback('/[^\x00-\x7f]/u', function ($m) {
+                    return rawurlencode($m[0]);
+                }, $kv[1]);
+                $pairs[] = $k . '=' . $v;
+            } else {
+                $pairs[] = $k;
+            }
+        }
+        $parts['query'] = implode('&', $pairs);
+    }
+
+    return ($parts['scheme'] ?? 'http') . '://'
+        . ($parts['host'] ?? '')
+        . (isset($parts['port']) ? ':' . $parts['port'] : '')
+        . ($parts['path'] ?? '')
+        . (!empty($parts['query']) ? '?' . $parts['query'] : '')
+        . (isset($parts['fragment']) ? '#' . $parts['fragment'] : '');
+}
+
 /** 归一化 URL：去 fragment、补协议、过滤非法协议；非法返回 null */
 function normalize_url(string $url, string $base): ?string
 {
@@ -127,6 +184,7 @@ function normalize_url(string $url, string $base): ?string
     }
     $hashPos = strpos($url, '#');
     if ($hashPos !== false) $url = substr($url, 0, $hashPos);
+    $url = encode_non_ascii_url($url); // 中文路径/查询串百分号编码，中文域名转 punycode，否则 curl 无法请求
     $parts = parse_url($url);
     if (!$parts || !isset($parts['scheme'], $parts['host'])) return null;
     if (!in_array(strtolower($parts['scheme']), ['http', 'https'], true)) return null;
@@ -400,8 +458,19 @@ function create_nested_folders(string $domain, string $dirPath): string
 
 function crawl_site(string $startUrl): array
 {
+    $startUrl = encode_non_ascii_url($startUrl); // 起始 URL 先编码，保证 baseDomain 与后续链接 host 同口径
     $startTs = time();
     $baseDomain = strtolower((string)parse_url($startUrl, PHP_URL_HOST));
+
+    // 爬取前清理该域名的旧目录与旧 zip，避免同名文件累积 _2/_3 序号
+    $oldFolder = BASE_DIR . DIRECTORY_SEPARATOR . sanitize_name($baseDomain);
+    if (is_dir($oldFolder)) {
+        delete_folder($oldFolder);
+    }
+    $oldZip = BASE_DIR . DIRECTORY_SEPARATOR . sanitize_name($baseDomain) . '.zip';
+    if (is_file($oldZip)) {
+        @unlink($oldZip);
+    }
 
     $queue = [$startUrl];          // 待处理队列（BFS）
     $qIdx = 0;
@@ -593,6 +662,10 @@ $scheme = strtolower($parts['scheme'] ?? '');
 if (!in_array($scheme, ['http', 'https'], true)) {
     json_out(['success' => false, 'error' => '仅支持 http / https 协议']);
 }
+
+// 统一编码：中文路径百分号编码、中文域名转 punycode，保证目录/打包/请求口径一致
+$url = encode_non_ascii_url($url);
+$parts = parse_url($url);
 
 if (!is_dir(BASE_DIR)) @mkdir(BASE_DIR, 0777, true);
 
